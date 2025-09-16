@@ -85,7 +85,23 @@ class SurvivorStrategy:
         self.symbol_initials = self.strat_var_symbol_initials
         self.order_manager = order_manager  # Store OrderTracker
         self.broker.download_instruments()
-        self.instruments = self.broker.instruments_df[self.broker.instruments_df['tradingsymbol'].str.startswith(self.symbol_initials)]   # For Zerodha
+
+        if 'zerodha' in str(type(self.broker)).lower():
+            self.instrument_col_mapping = {
+                'tradingsymbol': 'tradingsymbol',
+                'instrument_type': 'instrument_type',
+                'segment': 'segment',
+                'strike': 'strike'
+            }
+        else:
+            self.instrument_col_mapping = {
+                'tradingsymbol': 'Symbol Ticker',
+                'instrument_type': 'Option Type',
+                'segment': 'Segment',
+                'strike': 'Strike Price'
+            }
+
+        self.instruments = self.broker.instruments_df[self.broker.instruments_df[self.instrument_col_mapping['tradingsymbol']].str.startswith(self.symbol_initials)]
         if self.instruments.shape[0] == 0:
             logger.error(f"No instruments found for {self.symbol_initials}")
             logger.error(f"Instument {self.symbol_initials} not found. Please check the symbol initials")
@@ -139,19 +155,19 @@ class SurvivorStrategy:
             
         # Filter for CE instruments to calculate strike difference 
         ce_instruments = self.instruments[
-            self.instruments['tradingsymbol'].str.startswith(symbol_initials) & 
-            self.instruments['tradingsymbol'].str.endswith('CE')
+            self.instruments[self.instrument_col_mapping['tradingsymbol']].str.startswith(symbol_initials) &
+            self.instruments[self.instrument_col_mapping['tradingsymbol']].str.endswith('CE')
         ]
         
         if ce_instruments.shape[0] < 2:
             logger.error(f"Not enough CE instruments found for {symbol_initials} to calculate strike difference")
             return 0
         # Sort by strike
-        ce_instruments_sorted = ce_instruments.sort_values('strike')
+        ce_instruments_sorted = ce_instruments.sort_values(self.instrument_col_mapping['strike'])
         # Take the top 2
         top2 = ce_instruments_sorted.head(2)
         # Calculate the difference
-        self.strike_difference = abs(top2.iloc[1]['strike'] - top2.iloc[0]['strike'])
+        self.strike_difference = abs(top2.iloc[1][self.instrument_col_mapping['strike']] - top2.iloc[0][self.instrument_col_mapping['strike']])
         return self.strike_difference
 
     def on_ticks_update(self, ticks):
@@ -253,7 +269,7 @@ class SurvivorStrategy:
                     return 
                 
                 # Get current quote for the selected instrument
-                symbol_code = self.strat_var_exchange + ":" + instrument['tradingsymbol']
+                symbol_code = self.strat_var_exchange + ":" + instrument[self.instrument_col_mapping['tradingsymbol']]
                 quote = self.broker.get_quote(symbol_code)[symbol_code]
                 
                 # Check if premium meets minimum threshold
@@ -264,8 +280,8 @@ class SurvivorStrategy:
                     continue
                     
                 # Execute the trade
-                logger.info(f"Execute PE sell @ {instrument['tradingsymbol']} × {total_quantity}, Market Price")
-                self._place_order(instrument['tradingsymbol'], total_quantity)
+                logger.info(f"Execute PE sell @ {instrument[self.instrument_col_mapping['tradingsymbol']]} × {total_quantity}, Market Price")
+                self._place_order(instrument[self.instrument_col_mapping['tradingsymbol']], total_quantity)
                 
                 # Set reset flag to enable reset logic
                 self.pe_reset_gap_flag = 1
@@ -327,7 +343,7 @@ class SurvivorStrategy:
                     return
                     
                 # Get current quote for the selected instrument
-                symbol_code = self.strat_var_exchange + ":" + instrument['tradingsymbol']
+                symbol_code = self.strat_var_exchange + ":" + instrument[self.instrument_col_mapping['tradingsymbol']]
                 quote = self.broker.get_quote(symbol_code)[symbol_code]
                 print("=======", quote)
                 
@@ -339,8 +355,8 @@ class SurvivorStrategy:
                     continue
                     
                 # Execute the trade
-                logger.info(f"Execute CE sell @ {instrument['tradingsymbol']} × {total_quantity}, Market Price")
-                self._place_order(instrument['tradingsymbol'], total_quantity)
+                logger.info(f"Execute CE sell @ {instrument[self.instrument_col_mapping['tradingsymbol']]} × {total_quantity}, Market Price")
+                self._place_order(instrument[self.instrument_col_mapping['tradingsymbol']], total_quantity)
                 
                 # Set reset flag to enable reset logic
                 self.ce_reset_gap_flag = 1
@@ -422,16 +438,16 @@ class SurvivorStrategy:
         
         # Filter instruments for matching criteria
         df = self.instruments[
-            (self.instruments['tradingsymbol'].str.startswith(self.strat_var_symbol_initials)) &
-            (self.instruments['instrument_type'] == option_type) &
-            (self.instruments['segment'] == "NFO-OPT")
+            (self.instruments[self.instrument_col_mapping['tradingsymbol']].str.startswith(self.strat_var_symbol_initials)) &
+            (self.instruments[self.instrument_col_mapping['instrument_type']] == option_type) &
+            (self.instruments[self.instrument_col_mapping['segment']] == "NFO-OPT")
         ]
         
         if df.empty:
             return None
             
         # Find closest strike within acceptable tolerance
-        df['target_strike_diff'] = (df['strike'] - target_strike).abs()
+        df['target_strike_diff'] = (df[self.instrument_col_mapping['strike']] - target_strike).abs()
         
         # Filter to strikes within half strike difference (tolerance for rounding)
         tolerance = self._get_strike_difference(self.strat_var_symbol_initials) / 2
@@ -480,8 +496,8 @@ class SurvivorStrategy:
                 return None
                 
             # Check if premium meets minimum threshold
-            symbol_code = f"{self.strat_var_exchange}:{instrument['tradingsymbol']}"
-            price = float(self.kite.quote(symbol_code)[symbol_code]['last_price'])
+            symbol_code = f"{self.strat_var_exchange}:{instrument[self.instrument_col_mapping['tradingsymbol']]}"
+            price = float(self.broker.get_quote(symbol_code)[symbol_code]['last_price'])
             
             if price < self.strat_var_min_price_to_sell:
                 # Try closer strike if premium too low
@@ -617,6 +633,7 @@ if __name__ == "__main__":
     from orders import OrderTracker
     from strategy.survivor import SurvivorStrategy
     from brokers.zerodha import ZerodhaBroker
+    from brokers.fyers import FyersBroker
     from logger import logger
     from queue import Queue
     import random
@@ -800,7 +817,13 @@ PARAMETER GROUPS:
         parser.add_argument('--config-file', type=str, default=config_file,
                         help='Path to YAML configuration file containing default values. '
                              'Defaults to system/strategy/configs/survivor.yml')
+
+        parser.add_argument('--broker', type=str, choices=['zerodha', 'fyers'], default='zerodha',
+                        help='Broker to use for trading.')
         
+        parser.add_argument('--force', action='store_true',
+                        help='Force run without confirmation.')
+
         return parser
 
     def show_config(config):
@@ -1024,7 +1047,7 @@ PARAMETER GROUPS:
         return True
     
     # Run configuration validation
-    if not validate_configuration(config):
+    if not args.force and not validate_configuration(config):
         logger.error("Configuration validation failed. Please update your configuration.")
         sys.exit(1)
 
@@ -1050,12 +1073,19 @@ PARAMETER GROUPS:
     
     
     # Create broker interface for market data and order execution
-    if os.getenv("BROKER_TOTP_ENABLE") == "true":
-        logger.info("Using TOTP login flow")
-        broker = ZerodhaBroker(without_totp=False)
+    if args.broker == 'zerodha':
+        if os.getenv("BROKER_TOTP_ENABLE") == "true":
+            logger.info("Using Zerodha TOTP login flow")
+            broker = ZerodhaBroker(without_totp=False)
+        else:
+            logger.info("Using Zerodha normal login flow")
+            broker = ZerodhaBroker(without_totp=True)
+    elif args.broker == 'fyers':
+        logger.info("Using Fyers login flow")
+        broker = FyersBroker()
     else:
-        logger.info("Using normal login flow")
-        broker = ZerodhaBroker(without_totp=True)
+        logger.error(f"Invalid broker specified: {args.broker}")
+        sys.exit(1)
     
     # Create order tracking system for position management
     order_tracker = OrderTracker() 
@@ -1064,8 +1094,15 @@ PARAMETER GROUPS:
     # This token is used for websocket subscription to receive real-time price updates
     try:
         quote_data = broker.get_quote(config['index_symbol'])
-        instrument_token = quote_data[config['index_symbol']]['instrument_token']
-        logger.info(f"✓ Index instrument token obtained: {instrument_token}")
+        if quote_data and config['index_symbol'] in quote_data:
+            instrument_token = quote_data[config['index_symbol']].get('instrument_token')
+            if not instrument_token:
+                # For fyers, the instrument token is called 'fytoken'
+                instrument_token = quote_data[config['index_symbol']].get('fytoken')
+            logger.info(f"✓ Index instrument token obtained: {instrument_token}")
+        else:
+            instrument_token = None
+            logger.error(f"Could not get quote for {config['index_symbol']}")
     except Exception as e:
         logger.error(f"Failed to get instrument token for {config['index_symbol']}: {e}")
         sys.exit(1)

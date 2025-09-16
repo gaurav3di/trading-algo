@@ -16,6 +16,7 @@ from fyers_apiv3.FyersWebsocket import data_ws
 from ratelimit import limits, sleep_and_retry
 import functools
 from typing import Dict, List, Optional, Any, Tuple
+import pandas as pd
 
 # Import base broker classes
 from .base import BrokerBase
@@ -298,6 +299,24 @@ class FyersBroker(BrokerBase):
     def get_access_token(self):
         return self.access_token
 
+    def download_instruments(self, url="https://public.fyers.in/sym_details/NSE_FO.csv"):
+        """
+        Download and load instruments from a given URL.
+        """
+        try:
+            df = pd.read_csv(url, header=None)
+            df.columns = [
+                'Fytoken', 'Symbol Details', 'Exchange Instrument Type', 'Minimum Lot Size', 'Tick Size',
+                'ISIN', 'Trading Session', 'Last Update Date', 'Expiry Date', 'Symbol Ticker',
+                'Exchange', 'Segment', 'Scrip Code', 'Underlying Scrip Code', 'Strike Price',
+                'Option Type', 'Underlying Fytoken', 'nan'
+            ]
+            self.instruments_df = df
+            return self.instruments_df
+        except Exception as e:
+            logger.error(f"Error downloading instruments: {e}")
+            return None
+
     # REST-based data retrieval methods
     @fyers_rate_limit
     def get_history(self, symbol: str, resolution: str, start_date: str, end_date: str, oi_flag: bool = False):
@@ -397,19 +416,21 @@ class FyersBroker(BrokerBase):
     
 
     @fyers_rate_limit
-    def get_quotes(self, data: dict):
+    def get_quote(self, symbol: str):
         """
         Retrieve current quotes via REST.
-
-        Args:
-            data (dict): Parameters for quote data.
-
-        Returns:
-            dict: Quotes data response.
         """
+        data = {"symbols": symbol}
         result = self.fyers_model.quotes(data)
         self.update_context()
-        return result
+        if result and result.get('d'):
+            quote_data = result['d'][0]['v']
+            return {
+                symbol: {
+                    'last_price': quote_data.get('lp', 0)
+                }
+            }
+        return None
 
     @fyers_rate_limit
     def get_margin(self, symbols: list, use_curl=True):
@@ -562,6 +583,39 @@ class FyersBroker(BrokerBase):
         except Exception as e:
             logger.error(f"Error in FyersBroker.get_multiorder_margin: {e}")
             return {"error": str(e)}
+
+    def place_order(self, symbol, quantity, price, transaction_type, order_type, variety, exchange, product, tag="Unknown"):
+        """
+        Place an order with Fyers.
+        """
+        side = 1 if transaction_type == "BUY" else -1
+        type_ = 2 if order_type == "MARKET" else 1
+
+        data = {
+            "symbol": f"{exchange}:{symbol}",
+            "qty": quantity,
+            "type": type_,
+            "side": side,
+            "productType": product,
+            "limitPrice": price if order_type == "LIMIT" else 0,
+            "stopPrice": 0,
+            "validity": "DAY",
+            "disclosedQty": 0,
+            "offlineOrder": "False",
+            "stopLoss": 0,
+            "takeProfit": 0
+        }
+
+        try:
+            order_response = self.fyers_model.place_order(data)
+            if order_response.get("id"):
+                return order_response["id"]
+            else:
+                logger.error(f"Order placement failed: {order_response.get('message')}")
+                return -1
+        except Exception as e:
+            logger.error(f"Order placement failed: {e}")
+            return -1
 
     # WebSocket-based live data methods
     def connect_websocket(self):
